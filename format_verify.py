@@ -1,3 +1,6 @@
+# Parses Riedon save files
+
+
 import re
 import pandas as pd
 from datetime import datetime, timedelta

@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
 import math
+import os
 
 # --- Configuration ---
 CELL_CAPACITY_AH = 3.5 
@@ -15,26 +16,53 @@ SECONDS_PER_HOUR = 3600.0
 R0_PACK_OHMS = 0.07 
 R1_PACK_OHMS = 0.035 
 C1_PACK_FARAD = 285.0 
+OCV_CSV_PATH = 'curve-compute/processed_red_curve_data.csv'
+
 
 # --- Improved OCV Mapping for Molicel INR-18650-M35A ---
 # The previous map was too optimistic at low voltages (e.g. 3.7V is not 80%).
 # This curve is more representative of a standard high-capacity 18650.
-OCV_DATA = np.array([
-    # SOC (%) | Voltage (V)
-    [100, 4.20],
-    [95,  4.14],
-    [90,  4.07],
-    [80,  4.00],
-    [70,  3.93],
-    [60,  3.84],
-    [50,  3.74],
-    [40,  3.66],
-    [30,  3.56],
-    [20,  3.45],
-    [10,  3.30],
-    [5,   3.15],
-    [0,   2.50]
-])
+# --- Improved OCV Mapping (Based on M35A 0.2C / Red Line) ---
+# This curve assumes low-current "Cruising" voltage (approx 0.7A per cell).
+# It is "stiffer" (higher voltage for same SOC) than the previous map.
+try:
+    
+    print(f"Loading OCV curve from: {OCV_CSV_PATH}")
+    ocv_df = pd.read_csv(OCV_CSV_PATH)
+    
+    # Extract SOC (0-1 -> 0-100%) and Voltage
+    # CSV Columns: 'Capacity (mAh)', 'Voltage (V)', 'State of Charge'
+    soc_points = ocv_df['State of Charge'].values * 100.0
+    voltage_points = ocv_df['Voltage (V)'].values
+    
+    # Create the OCV_DATA array [SOC%, Voltage]
+    OCV_DATA = np.column_stack((soc_points, voltage_points))
+    
+    # Ensure data is sorted by SOC (ascending) for interpolation
+    # The CSV usually goes High Voltage -> Low Voltage (Discharge), so SOC goes 100 -> 0.
+    # We need to sort it 0 -> 100 for interp1d.
+    sort_indices = np.argsort(OCV_DATA[:, 0])
+    OCV_DATA = OCV_DATA[sort_indices]
+
+except Exception as e:
+    print(f"Error loading OCV CSV: {e}")
+    print("Falling back to hardcoded OCV map (Less Accurate)")
+    OCV_DATA = np.array([
+        [0.0,   2.50],
+        [2.5,   2.80],
+        [5.0,   2.98],
+        [14.2,  3.05],
+        [28.57, 3.33],
+        [42.9,  3.50],
+        [50.0,  3.55],
+        [57.1,  3.60],
+        [71.4,  3.75],
+        [85.7,  3.87],
+        [90.0,  4.04],
+        [95.0,  4.08],
+        [100.0, 4.20]
+    ])
+
 
 # Prepare Interpolators
 OCV_SOC_MAP_PERCENT = OCV_DATA[:, 0]
@@ -112,7 +140,7 @@ class EKF_SOCEstimator:
         y = measured_voltage - V_t_pred
         
         ocv_prime = self.get_ocv_prime()
-        C_jac = np.array([[ocv_prime, -1.0]])
+        C_jac = np.array([[ocv_prime * 100, -1.0]])
         
         S = C_jac @ self.P @ C_jac.T + self.R
         K = self.P @ C_jac.T @ np.linalg.inv(S)
@@ -194,13 +222,23 @@ def run_ekf_simulation(file_path):
         # SOC = Start - (Discharged / Capacity)
         soc_cc = initial_soc_percent - (cumulative_ah_discharged / ekf.Qn_Ah) * 100.0
         soc_cc = np.clip(soc_cc, 0.0, 100.0)
+
+        # 3. Pure ECM OCV-based SoC Update
+        # Calculates SoC by reversing the voltage drop equation: OCV = V_meas + V_rc + I*R0
+        # This gives the "instantaneous" SoC based on the voltage curve and impedance model, 
+        # ignoring the EKF's historical filtering/covariance smoothing for the SoC state itself.
+        v_rc_estimated = ekf.x[1, 0]
+        ecm_ocv = voltage + (current * R0_PACK_OHMS) + v_rc_estimated
+        soc_ecm_ocv = ocv_to_soc_interp(ecm_ocv)
+        soc_ecm_ocv = np.clip(soc_ecm_ocv, 0.0, 100.0)
         
         results.append({
             'Timestamp': row['Timestamp'],
             'Current_A': current,
             'Voltage_V': voltage,
             'SOC_EKF_%': soc_estimate,
-            'SOC_CC_%': soc_cc
+            'SOC_CC_%': soc_cc,
+            'SOC_ECM_OCV_%': soc_ecm_ocv
         })
 
     results_df = pd.DataFrame(results)
@@ -208,12 +246,22 @@ def run_ekf_simulation(file_path):
     return results_df
 
 if __name__ == "__main__":
-    csv_path = 'FSGP_day1.csv'
+    import argparse
+    parser = argparse.ArgumentParser(description="Run EKF simulation on battery data.")
+    parser.add_argument("-i", "--input", default="FSGP_day1.csv", help="Input CSV file path")
+    parser.add_argument("-o", "--output", default="ekf_soc_results.csv", help="Output CSV file path")
+    
+    args = parser.parse_args()
+
     try:
-        results = run_ekf_simulation(csv_path)
+        # Note: Ensure 'run_ekf_simulation' is defined or imported before running this block
+        results = run_ekf_simulation(args.input)
         print("\n--- Final Results ---")
         print(results.tail())
-        results.to_csv('ekf_soc_results_fixed.csv', index=False)
-        print("\nSaved to 'ekf_soc_results_fixed.csv'")
+        
+        results.to_csv(args.output, index=False)
+        print(f"\nSaved to '{args.output}'")
     except FileNotFoundError:
-        print("File not found.")
+        print(f"File not found: {args.input}")
+    except NameError:
+        print("Error: 'run_ekf_simulation' is not defined. Please import or define the simulation function.")
