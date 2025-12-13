@@ -13,9 +13,9 @@ SECONDS_PER_HOUR = 3600.0
 
 # --- Parameters ---
 # R0 approx 25mOhm/cell * 34 / 12 = ~0.07 Ohm
-R0_PACK_OHMS = 0.07 
-R1_PACK_OHMS = 0.035 
-C1_PACK_FARAD = 285.0 
+R0_PACK_OHMS = 25.0 / 1000 * 34 / 12 # Could update to use temperature (https://www.dnkpower.com/wp-content/uploads/2022/08/Molicel-INR18650-M35A-datasheet.pdf pg 4 #6)
+R1_PACK_OHMS = 0.0601 # See estimate_params.py
+C1_PACK_FARAD = 25.5 # R1 and C1 vary with temperature and SoC, so this is a candidate for improvement
 OCV_CSV_PATH = 'curve-compute/processed_red_curve_data.csv'
 
 
