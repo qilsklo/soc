@@ -130,4 +130,4 @@ def parse_save_file(input_file, output_file):
 if __name__ == "__main__":
     # If capture start time isn't in file, script will default to 'now' + relative time.
     # Ideally, ensure 'Serial capture started at...' line exists in save.txt
-    parse_save_file('save.txt', 'parsed_save_data.csv')
+    parse_save_file('rsfday1raw.txt', 'rsfday1.csv')

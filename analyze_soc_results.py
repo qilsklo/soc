@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 # Load your CSV
-df = pd.read_csv("ekf_soc_results_fixed.csv")
+df = pd.read_csv("FSGP_day1result.csv")
 df["Timestamp"] = pd.to_datetime(df["Timestamp"])
 
 plt.plot(df["Timestamp"], df["SOC_EKF_%"], label="SOC EKF")
