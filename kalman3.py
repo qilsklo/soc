@@ -277,8 +277,8 @@ def run_ekf_simulation(file_path):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run EKF simulation on battery data.")
-    parser.add_argument("-i", "--input", default="FSGP_day1.csv", help="Input CSV file path")
-    parser.add_argument("-o", "--output", default="FSGP_day1result.csv", help="Output CSV file path")
+    parser.add_argument("-i", "--input", default="data/FSGP_day1.csv", help="Input CSV file path")
+    parser.add_argument("-o", "--output", default="results/FSGP_day1result.csv", help="Output CSV file path")
     
     args = parser.parse_args()
 
