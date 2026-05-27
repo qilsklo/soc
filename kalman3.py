@@ -12,10 +12,27 @@ PACK_CAPACITY_AH = CELL_CAPACITY_AH * PARALLEL_STRINGS # 42.0 Ah
 SECONDS_PER_HOUR = 3600.0
 
 # --- Parameters ---
-# R0 approx 25mOhm/cell * 34 / 12 = ~0.07 Ohm
-R0_PACK_OHMS = 25.0 / 1000 * 34 / 12 # Could update to use temperature (https://www.dnkpower.com/wp-content/uploads/2022/08/Molicel-INR18650-M35A-datasheet.pdf pg 4 #6)
-R1_PACK_OHMS = 0.0601 # See estimate_params.py
-C1_PACK_FARAD = 25.5 # R1 and C1 vary with temperature and SoC, so this is a candidate for improvement
+# Dynamic ECM parameters based on HPPC testing
+try:
+    print("Loading HPPC ECM parameters from: hppc/hppc_params.csv")
+    hppc_df = pd.read_csv('hppc/hppc_params.csv')
+    hppc_df = hppc_df.sort_values('SOC')
+    
+    # Scale from cell to pack level
+    hppc_soc_percent = hppc_df['SOC'].values * 100.0
+    hppc_r0_pack = hppc_df['R0'].values * (SERIES_CELLS / PARALLEL_STRINGS)
+    hppc_r1_pack = hppc_df['R1'].values * (SERIES_CELLS / PARALLEL_STRINGS)
+    hppc_c1_pack = hppc_df['C1'].values * (PARALLEL_STRINGS / SERIES_CELLS)
+    
+    soc_to_r0_interp = interp1d(hppc_soc_percent, hppc_r0_pack, kind='linear', fill_value="extrapolate")
+    soc_to_r1_interp = interp1d(hppc_soc_percent, hppc_r1_pack, kind='linear', fill_value="extrapolate")
+    soc_to_c1_interp = interp1d(hppc_soc_percent, hppc_c1_pack, kind='linear', fill_value="extrapolate")
+except Exception as e:
+    print(f"Error loading HPPC CSV: {e}")
+    print("Falling back to static parameters.")
+    def soc_to_r0_interp(soc): return 25.0 / 1000 * 34 / 12
+    def soc_to_r1_interp(soc): return 0.0601
+    def soc_to_c1_interp(soc): return 25.5
 OCV_CSV_PATH = 'curve-compute/processed_red_curve_data.csv'
 
 
@@ -95,8 +112,7 @@ class EKF_SOCEstimator:
         # Measurement Noise (Voltage Sensor Noise)
         self.R = np.array([[0.05**2]]) 
 
-        self.A_rc = math.exp(-self.dt / (R1_PACK_OHMS * C1_PACK_FARAD))
-        self.B_rc = R1_PACK_OHMS * (1 - self.A_rc)
+
         
         self.last_current = 0.0
 
@@ -117,12 +133,20 @@ class EKF_SOCEstimator:
         x_minus[0, 0] = self.x[0, 0] - (I * self.dt) / (self.Qn_Ah * SECONDS_PER_HOUR)
         x_minus[0, 0] = np.clip(x_minus[0, 0], 0.0, 1.0)
         
+        # Get dynamic parameters
+        soc_est = np.clip(self.x[0, 0] * 100.0, 0.0, 100.0)
+        r1_pack = float(soc_to_r1_interp(soc_est))
+        c1_pack = float(soc_to_c1_interp(soc_est))
+        
+        A_rc = math.exp(-self.dt / (r1_pack * c1_pack))
+        B_rc = r1_pack * (1 - A_rc)
+
         # V_RC1 Prediction
-        x_minus[1, 0] = self.x[1, 0] * self.A_rc + I * self.B_rc
+        x_minus[1, 0] = self.x[1, 0] * A_rc + I * B_rc
         
         A_jac = np.array([
             [1.0, 0.0],
-            [0.0, self.A_rc]
+            [0.0, A_rc]
         ])
         
         P_minus = A_jac @ self.P @ A_jac.T + self.Q
@@ -135,7 +159,10 @@ class EKF_SOCEstimator:
         
         # Voltage Prediction: V = OCV - V_rc - I*R0
         # Positive I (Discharge) -> Voltage Sags (Lower than OCV)
-        V_t_pred = ocv_pred - self.x[1, 0] - self.last_current * R0_PACK_OHMS
+        soc_est = np.clip(self.x[0, 0] * 100.0, 0.0, 100.0)
+        r0_pack = float(soc_to_r0_interp(soc_est))
+        
+        V_t_pred = ocv_pred - self.x[1, 0] - self.last_current * r0_pack
         
         y = measured_voltage - V_t_pred
         
@@ -191,7 +218,8 @@ def run_ekf_simulation(file_path):
     first_voltage = df['Voltage_V'].iloc[0]
     
     # Estimate Initial OCV: V + I*R (compensate for initial sag)
-    initial_ocv = first_voltage + first_current * R0_PACK_OHMS
+    initial_r0 = float(soc_to_r0_interp(50.0))
+    initial_ocv = first_voltage + first_current * initial_r0
     initial_soc_percent = ocv_to_soc_interp(initial_ocv)
     initial_soc_percent = np.clip(initial_soc_percent, 0.0, 100.0)
     
@@ -228,7 +256,8 @@ def run_ekf_simulation(file_path):
         # This gives the "instantaneous" SoC based on the voltage curve and impedance model, 
         # ignoring the EKF's historical filtering/covariance smoothing for the SoC state itself.
         v_rc_estimated = ekf.x[1, 0]
-        ecm_ocv = voltage + (current * R0_PACK_OHMS) + v_rc_estimated
+        r0_pack = float(soc_to_r0_interp(soc_estimate))
+        ecm_ocv = voltage + (current * r0_pack) + v_rc_estimated
         soc_ecm_ocv = ocv_to_soc_interp(ecm_ocv)
         soc_ecm_ocv = np.clip(soc_ecm_ocv, 0.0, 100.0)
         
