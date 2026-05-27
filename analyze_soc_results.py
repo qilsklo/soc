@@ -16,7 +16,7 @@ plt.legend()
 plt.tight_layout()
 
 # Save the figure to a file
-plt.savefig("ekf_vs_cc_soc.png", dpi=300)
+plt.savefig("plots/ekf_vs_cc_soc.png", dpi=300)
 
 # Show the figure interactively
 plt.show()
